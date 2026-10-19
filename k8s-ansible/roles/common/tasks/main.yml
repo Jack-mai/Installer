@@ -1,0 +1,183 @@
+---
+- name: Kiểm tra hệ điều hành là Ubuntu 22.04
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == "Ubuntu"
+      - ansible_distribution_version == "22.04"
+    fail_msg: "Playbook này viết cho Ubuntu 22.04, node {{ inventory_hostname }} đang chạy {{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+- name: Đặt hostname
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Đặt timezone
+  community.general.timezone:
+    name: "{{ timezone }}"
+  ignore_errors: true
+
+- name: Thêm toàn bộ node vào /etc/hosts
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    marker: "# {mark} K8S CLUSTER NODES"
+    block: |
+      {% for h in groups['k8s_cluster'] %}
+      {{ hostvars[h].ansible_host }} {{ h }}
+      {% endfor %}
+
+- name: Tắt UFW
+  community.general.ufw:
+    state: disabled
+  when: disable_ufw | bool
+  ignore_errors: true
+
+# ---------- Swap ----------
+- name: Tắt swap ngay
+  ansible.builtin.command: swapoff -a
+  when: ansible_swaptotal_mb | int > 0
+  changed_when: true
+
+- name: Comment dòng swap trong /etc/fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\sswap\s+.*)$'
+    replace: '# \1'
+
+- name: Tắt swap.img của systemd (nếu có)
+  ansible.builtin.shell: |
+    for u in $(systemctl list-units --type swap --no-legend | awk '{print $1}'); do
+      systemctl mask "$u"
+    done
+  changed_when: false
+
+# ---------- Kernel ----------
+- name: Khai báo kernel module cho containerd
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k8s.conf
+    content: |
+      overlay
+      br_netfilter
+    mode: "0644"
+
+- name: Load kernel module
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: present
+  loop: [overlay, br_netfilter]
+
+- name: Sysctl cho Kubernetes
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/99-kubernetes.conf
+    reload: true
+  loop:
+    - { key: net.bridge.bridge-nf-call-iptables, value: "1" }
+    - { key: net.bridge.bridge-nf-call-ip6tables, value: "1" }
+    - { key: net.ipv4.ip_forward, value: "1" }
+
+# ---------- Gói cơ bản ----------
+- name: Cài gói cần thiết
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gpg
+      - socat
+      - conntrack
+      - ipset
+      - ipvsadm
+      - chrony
+    state: present
+    update_cache: true
+
+- name: Bật chrony (đồng bộ giờ - etcd rất nhạy với lệch giờ)
+  ansible.builtin.systemd:
+    name: chrony
+    enabled: true
+    state: started
+
+# ---------- containerd ----------
+- name: Cài containerd
+  ansible.builtin.apt:
+    name: containerd
+    state: present
+
+- name: Tạo thư mục /etc/containerd
+  ansible.builtin.file:
+    path: /etc/containerd
+    state: directory
+    mode: "0755"
+
+- name: Sinh config mặc định containerd
+  ansible.builtin.shell: containerd config default > /etc/containerd/config.toml
+  args:
+    creates: /etc/containerd/config.toml
+
+- name: Bật SystemdCgroup
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: 'SystemdCgroup\s*=\s*false'
+    replace: "SystemdCgroup = true"
+  notify: restart containerd
+
+- name: crictl dùng containerd
+  ansible.builtin.copy:
+    dest: /etc/crictl.yaml
+    content: |
+      runtime-endpoint: unix:///run/containerd/containerd.sock
+      image-endpoint: unix:///run/containerd/containerd.sock
+      timeout: 10
+    mode: "0644"
+
+# ---------- kubeadm / kubelet / kubectl ----------
+- name: Thêm repo Kubernetes v{{ k8s_version }}
+  ansible.builtin.deb822_repository:
+    name: kubernetes
+    types: deb
+    uris: "https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/"
+    suites: /
+    signed_by: "https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/Release.key"
+    state: present
+
+- name: Cài kubelet, kubeadm, kubectl
+  ansible.builtin.apt:
+    name: [kubelet, kubeadm, kubectl]
+    state: present
+    update_cache: true
+
+- name: Khóa version (apt-mark hold)
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: [kubelet, kubeadm, kubectl]
+
+- name: Lấy image pause đúng với version kubeadm
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubeadm config images list --kubernetes-version "$(kubeadm version -o short)" 2>/dev/null | grep pause
+  args:
+    executable: /bin/bash
+  register: pause_image
+  changed_when: false
+
+- name: Đặt sandbox (pause) image cho containerd
+  ansible.builtin.replace:
+    path: /etc/containerd/config.toml
+    regexp: '{{ item }}'
+    replace: '\1"{{ pause_image.stdout | trim }}"'
+  loop:
+    - '(sandbox_image\s*=\s*)".*"'
+    - "(sandbox\\s*=\\s*)'.*'"
+  when: pause_image.stdout | length > 0
+  notify: restart containerd
+
+- name: Áp dụng thay đổi containerd ngay
+  ansible.builtin.meta: flush_handlers
+
+- name: Bật containerd và kubelet
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [containerd, kubelet]

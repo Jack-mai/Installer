@@ -1,0 +1,20 @@
+---
+- name: Kiểm tra node đã join chưa
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: master_join_kubelet_conf
+
+- name: Join control-plane
+  ansible.builtin.command: >-
+    {{ hostvars[first_master].k8s_join_command }}
+    --control-plane
+    --certificate-key {{ hostvars[first_master].k8s_certificate_key }}
+    --apiserver-advertise-address {{ ansible_host }}
+    --apiserver-bind-port {{ api_server_port }}
+    --node-name {{ inventory_hostname }}
+  when: not master_join_kubelet_conf.stat.exists
+  changed_when: true
+
+- name: Cấu hình kubectl
+  ansible.builtin.include_role:
+    name: kubeconfig

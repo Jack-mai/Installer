@@ -1,0 +1,73 @@
+---
+- name: Kiểm tra cluster đã init chưa
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: admin_conf
+
+- name: Tạo file kubeadm-config.yaml
+  ansible.builtin.template:
+    src: kubeadm-config.yaml.j2
+    dest: /root/kubeadm-config.yaml
+    mode: "0600"
+
+- name: Pull image control-plane trước
+  ansible.builtin.command: kubeadm config images pull --config /root/kubeadm-config.yaml
+  when: not admin_conf.stat.exists
+  changed_when: true
+
+- name: kubeadm init (master đầu tiên)
+  ansible.builtin.command: kubeadm init --config /root/kubeadm-config.yaml --upload-certs
+  register: kubeadm_init
+  when: not admin_conf.stat.exists
+  changed_when: true
+
+- name: Lưu log kubeadm init
+  ansible.builtin.copy:
+    content: "{{ kubeadm_init.stdout }}"
+    dest: /root/kubeadm-init.log
+    mode: "0600"
+  when: kubeadm_init is changed
+
+- name: Cấu hình kubectl
+  ansible.builtin.include_role:
+    name: kubeconfig
+
+# ---------- CNI: Calico ----------
+- name: Tải manifest Calico {{ calico_version }}
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml"
+    dest: /root/calico.yaml
+    mode: "0644"
+
+- name: Đặt Pod CIDR cho Calico
+  ansible.builtin.replace:
+    path: /root/calico.yaml
+    regexp: '# - name: CALICO_IPV4POOL_CIDR\n(\s*)#   value: ".*"'
+    replace: '- name: CALICO_IPV4POOL_CIDR\n\1  value: "{{ pod_network_cidr }}"'
+
+- name: Cài Calico
+  ansible.builtin.command: kubectl apply -f /root/calico.yaml
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: calico_apply
+  changed_when: "'created' in calico_apply.stdout or 'configured' in calico_apply.stdout"
+
+# ---------- Tạo lệnh join cho các node khác ----------
+- name: Tạo lệnh join
+  ansible.builtin.command: kubeadm token create --print-join-command
+  register: join_cmd
+  changed_when: false
+
+- name: Upload cert cho control-plane join
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubeadm init phase upload-certs --upload-certs 2>/dev/null | tail -1
+  args:
+    executable: /bin/bash
+  register: cert_key
+  changed_when: false
+
+- name: Lưu lệnh join
+  ansible.builtin.set_fact:
+    k8s_join_command: "{{ join_cmd.stdout | trim }}"
+    k8s_certificate_key: "{{ cert_key.stdout | trim }}"

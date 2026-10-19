@@ -1,0 +1,37 @@
+---
+# Cấu hình kubectl cho root và user SSH trên các master
+- name: Tạo thư mục .kube
+  ansible.builtin.file:
+    path: "{{ item.home }}/.kube"
+    state: directory
+    owner: "{{ item.user }}"
+    group: "{{ item.user }}"
+    mode: "0700"
+  loop:
+    - { user: root, home: /root }
+    - { user: "{{ ansible_user }}", home: "/home/{{ ansible_user }}" }
+  when: item.user == 'root' or ansible_user != 'root'
+
+- name: Copy admin.conf vào ~/.kube/config
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: "{{ item.home }}/.kube/config"
+    remote_src: true
+    owner: "{{ item.user }}"
+    group: "{{ item.user }}"
+    mode: "0600"
+  loop:
+    - { user: root, home: /root }
+    - { user: "{{ ansible_user }}", home: "/home/{{ ansible_user }}" }
+  when: item.user == 'root' or ansible_user != 'root'
+
+- name: Bật bash completion cho kubectl
+  ansible.builtin.lineinfile:
+    path: "{{ item }}"
+    line: "source <(kubectl completion bash); alias k=kubectl; complete -o default -F __start_kubectl k"
+    create: true
+    mode: "0644"
+  loop:
+    - /root/.bashrc
+    - "/home/{{ ansible_user }}/.bashrc"
+  when: ansible_user != 'root' or item == '/root/.bashrc'

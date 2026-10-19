@@ -1,0 +1,29 @@
+---
+# ====== Phiên bản ======
+# Repo pkgs.k8s.io theo minor version (vd: "1.35", "1.36", "1.37")
+k8s_version: "1.36"
+calico_version: "v3.32.2"
+
+# ====== API endpoint HA (VIP keepalived + HAProxy chạy trên 3 master) ======
+# VIP PHẢI là IP còn trống, cùng subnet 10.10.90.0/24, không gán cho máy nào
+api_vip: "10.10.90.150"
+# HAProxy nghe ở port này trên các master, forward về kube-apiserver :6443
+api_vip_port: 8443
+api_server_port: 6443
+
+# Card mạng mang IP 10.10.90.x (để trống = tự lấy card default route)
+keepalived_interface: ""
+keepalived_router_id: 51
+# Tối đa 8 ký tự
+keepalived_auth_pass: "K8sVip26"
+
+# ====== Mạng cluster ======
+# Không được trùng với dải 10.10.90.0/24 của node
+pod_network_cidr: "10.244.0.0/16"
+service_cidr: "10.96.0.0/12"
+cluster_name: "k8s-prod"
+
+# ====== Khác ======
+disable_ufw: true
+timezone: "Asia/Ho_Chi_Minh"
+first_master: "{{ groups['masters'][0] }}"

@@ -1,0 +1,39 @@
+# {{ ansible_managed }}
+global
+    log /dev/log local0
+    log /dev/log local1 notice
+    daemon
+    maxconn 4000
+
+defaults
+    mode                    tcp
+    log                     global
+    option                  tcplog
+    option                  dontlognull
+    retries                 3
+    timeout connect         10s
+    timeout client          1h
+    timeout server          1h
+    timeout check           10s
+
+frontend k8s-apiserver
+    bind *:{{ api_vip_port }}
+    mode tcp
+    option tcplog
+    default_backend k8s-masters
+
+backend k8s-masters
+    mode tcp
+    option httpchk GET /readyz
+    http-check expect status 200
+    balance roundrobin
+    default-server inter 5s downinter 5s rise 2 fall 3 slowstart 30s maxconn 250 maxqueue 256 weight 100
+{% for h in groups['masters'] %}
+    server {{ h }} {{ hostvars[h].ansible_host }}:{{ api_server_port }} check check-ssl verify none
+{% endfor %}
+
+listen stats
+    bind *:9000
+    mode http
+    stats enable
+    stats uri /stats

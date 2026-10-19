@@ -1,0 +1,40 @@
+---
+# XÓA SẠCH cluster để cài lại. CẨN THẬN: mất toàn bộ dữ liệu etcd!
+# Chạy: ansible-playbook reset.yml -e confirm_reset=yes
+
+- name: Reset Kubernetes cluster
+  hosts: k8s_cluster
+  gather_facts: false
+  tasks:
+    - name: Yêu cầu xác nhận
+      ansible.builtin.assert:
+        that: confirm_reset | default('no') == 'yes'
+        fail_msg: "Thêm -e confirm_reset=yes để xác nhận xóa cluster"
+      run_once: true
+
+    - name: kubeadm reset
+      ansible.builtin.command: kubeadm reset -f
+      changed_when: true
+      failed_when: false
+
+    - name: Xóa cấu hình còn sót
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/cni/net.d
+        - /var/lib/etcd
+        - /var/lib/calico
+        - /root/.kube
+        - "/home/{{ ansible_user }}/.kube"
+
+    - name: Xóa rule iptables / ipvs
+      ansible.builtin.shell: |
+        iptables -F && iptables -t nat -F && iptables -t mangle -F && iptables -X
+        ipvsadm --clear || true
+      changed_when: true
+
+    - name: Restart containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted

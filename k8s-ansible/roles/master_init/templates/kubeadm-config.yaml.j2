@@ -1,0 +1,30 @@
+# {{ ansible_managed }}
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: {{ ansible_host }}
+  bindPort: {{ api_server_port }}
+nodeRegistration:
+  name: {{ inventory_hostname }}
+  criSocket: unix:///run/containerd/containerd.sock
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+clusterName: {{ cluster_name }}
+controlPlaneEndpoint: "{{ api_vip }}:{{ api_vip_port }}"
+networking:
+  podSubnet: {{ pod_network_cidr }}
+  serviceSubnet: {{ service_cidr }}
+apiServer:
+  certSANs:
+    - {{ api_vip }}
+    - 127.0.0.1
+    - localhost
+{% for h in groups['masters'] %}
+    - {{ h }}
+    - {{ hostvars[h].ansible_host }}
+{% endfor %}
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd

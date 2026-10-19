@@ -1,0 +1,12 @@
+---
+- name: Kiểm tra node đã join chưa
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: worker_join_kubelet_conf
+
+- name: Join worker
+  ansible.builtin.command: >-
+    {{ hostvars[first_master].k8s_join_command }}
+    --node-name {{ inventory_hostname }}
+  when: not worker_join_kubelet_conf.stat.exists
+  changed_when: true

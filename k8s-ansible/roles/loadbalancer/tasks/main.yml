@@ -1,0 +1,52 @@
+---
+- name: Xác định card mạng cho keepalived
+  ansible.builtin.set_fact:
+    vip_iface: "{{ keepalived_interface if keepalived_interface | length > 0 else ansible_default_ipv4.interface }}"
+
+- name: Cài HAProxy và keepalived
+  ansible.builtin.apt:
+    name: [haproxy, keepalived]
+    state: present
+    update_cache: true
+
+- name: Cấu hình HAProxy
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    mode: "0644"
+    validate: haproxy -c -f %s
+  notify: restart haproxy
+
+- name: Script kiểm tra HAProxy cho keepalived
+  ansible.builtin.copy:
+    dest: /etc/keepalived/check_haproxy.sh
+    mode: "0755"
+    content: |
+      #!/bin/sh
+      # Fail nếu HAProxy không nghe ở port {{ api_vip_port }}
+      ss -ltn | grep -q ":{{ api_vip_port }} " || exit 1
+      exit 0
+
+- name: Cấu hình keepalived
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    mode: "0644"
+  notify: restart keepalived
+
+- name: Bật HAProxy và keepalived
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [haproxy, keepalived]
+
+- name: Áp dụng cấu hình
+  ansible.builtin.meta: flush_handlers
+
+- name: Chờ VIP {{ api_vip }} lên
+  ansible.builtin.wait_for:
+    host: "{{ api_vip }}"
+    port: "{{ api_vip_port }}"
+    timeout: 60
+  run_once: true

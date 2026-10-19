@@ -1,0 +1,45 @@
+! {{ ansible_managed }}
+global_defs {
+    router_id {{ inventory_hostname }}
+    enable_script_security
+    script_user root
+}
+
+vrrp_script check_haproxy {
+    script "/etc/keepalived/check_haproxy.sh"
+    interval 3
+    timeout 2
+    fall 2
+    rise 2
+    weight -20
+}
+
+vrrp_instance K8S_API_VIP {
+{% set idx = groups['masters'].index(inventory_hostname) %}
+    state {{ 'MASTER' if idx == 0 else 'BACKUP' }}
+    interface {{ vip_iface }}
+    virtual_router_id {{ keepalived_router_id }}
+    priority {{ 110 - idx * 5 }}
+    advert_int 1
+
+    # Dùng unicast để chạy được cả trên mạng chặn multicast (VMware, OpenStack...)
+    unicast_src_ip {{ ansible_host }}
+    unicast_peer {
+{% for h in groups['masters'] if h != inventory_hostname %}
+        {{ hostvars[h].ansible_host }}
+{% endfor %}
+    }
+
+    authentication {
+        auth_type PASS
+        auth_pass {{ keepalived_auth_pass }}
+    }
+
+    virtual_ipaddress {
+        {{ api_vip }}/{{ ansible_default_ipv4.prefix | default('24') }} dev {{ vip_iface }}
+    }
+
+    track_script {
+        check_haproxy
+    }
+}

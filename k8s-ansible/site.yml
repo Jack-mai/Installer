@@ -1,0 +1,67 @@
+---
+# Triển khai Kubernetes HA: 3 master + 3 worker trên Ubuntu 22.04
+# Chạy: ansible-playbook site.yml
+
+- name: "1. Chuẩn bị tất cả node (swap, kernel, containerd, kubeadm)"
+  hosts: k8s_cluster
+  gather_facts: true
+  roles:
+    - common
+
+- name: "2. HAProxy + keepalived VIP trên các master"
+  hosts: masters
+  gather_facts: true
+  roles:
+    - loadbalancer
+
+- name: "3. Khởi tạo master đầu tiên + Calico"
+  hosts: masters[0]
+  gather_facts: true
+  roles:
+    - master_init
+
+- name: "4. Join các master còn lại (lần lượt từng node)"
+  hosts: masters[1:]
+  gather_facts: true
+  serial: 1
+  roles:
+    - master_join
+
+- name: "5. Join worker"
+  hosts: workers
+  gather_facts: true
+  roles:
+    - worker_join
+
+- name: "6. Kiểm tra cluster"
+  hosts: masters[0]
+  gather_facts: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  tasks:
+    - name: Gắn nhãn role worker
+      ansible.builtin.command: kubectl label node {{ item }} node-role.kubernetes.io/worker= --overwrite
+      loop: "{{ groups['workers'] }}"
+      changed_when: false
+
+    - name: Chờ tất cả node Ready (tối đa 10 phút)
+      ansible.builtin.command: kubectl wait --for=condition=Ready nodes --all --timeout=60s
+      register: wait_nodes
+      until: wait_nodes.rc == 0
+      retries: 10
+      delay: 10
+      changed_when: false
+
+    - name: Lấy danh sách node
+      ansible.builtin.command: kubectl get nodes -o wide
+      register: nodes
+      changed_when: false
+
+    - name: Lấy pod hệ thống
+      ansible.builtin.command: kubectl get pods -A -o wide
+      register: pods
+      changed_when: false
+
+    - name: Kết quả
+      ansible.builtin.debug:
+        msg: "{{ nodes.stdout_lines + [''] + pods.stdout_lines }}"
