@@ -76,6 +76,23 @@
     - { key: net.ipv4.ip_forward, value: "1" }
 
 # ---------- Gói cơ bản ----------
+# Máy mới bật thường đang chạy unattended-upgrades / cloud-init giữ khoá apt
+- name: Chờ cloud-init chạy xong (nếu có)
+  ansible.builtin.command: cloud-init status --wait
+  register: common_cloud_init
+  changed_when: false
+  failed_when: false
+
+- name: Chờ apt/dpkg rảnh (tối đa 15 phút)
+  ansible.builtin.shell: |
+    while fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; do
+      sleep 5
+    done
+  args:
+    executable: /bin/bash
+  changed_when: false
+  timeout: 900
+
 - name: Cài gói cần thiết
   ansible.builtin.apt:
     name:
@@ -89,6 +106,7 @@
       - ipvsadm
       - chrony
     state: present
+    lock_timeout: 600
     update_cache: true
 
 - name: Bật chrony (đồng bộ giờ - etcd rất nhạy với lệch giờ)
@@ -102,6 +120,7 @@
   ansible.builtin.apt:
     name: containerd
     state: present
+    lock_timeout: 600
 
 - name: Tạo thư mục /etc/containerd
   ansible.builtin.file:
@@ -144,6 +163,7 @@
   ansible.builtin.apt:
     name: [kubelet, kubeadm, kubectl]
     state: present
+    lock_timeout: 600
     update_cache: true
 
 - name: Khóa version (apt-mark hold)
